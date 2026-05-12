@@ -8,6 +8,7 @@ import requests
 import json
 import anthropic
 import re
+import traceback
 
 app = Flask(__name__)
 CORS(app)
@@ -26,86 +27,60 @@ def extract_video_id(url):
             return m.group(1)
     return None
 
-# ========== GET DOWNLOAD LINK via y2mate-style API ==========
 def get_download_url(video_id):
-    # Try multiple free APIs one by one
-    apis = [
-        lambda: try_cobalt(video_id),
-        lambda: try_yt1s(video_id),
-        lambda: try_loader(video_id),
-    ]
-    for api in apis:
-        try:
-            result = api()
-            if result:
-                return result
-        except:
-            continue
-    raise Exception('সব downloader fail করেছে। পরে try করো।')
+    try:
+        res = requests.post(
+            'https://api.cobalt.tools/api/json',
+            headers={
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'url': f'https://www.youtube.com/watch?v={video_id}',
+                'vQuality': '720',
+                'isAudioMuted': False,
+            },
+            timeout=20
+        )
+        print(f'[cobalt] status={res.status_code} body={res.text[:300]}')
+        data = res.json()
+        if data.get('status') in ['stream', 'redirect', 'tunnel', 'pick']:
+            return data.get('url') or (data.get('picker', [{}])[0].get('url'))
+    except Exception as e:
+        print(f'[cobalt] error: {e}')
 
-def try_cobalt(video_id):
-    # cobalt.tools - open source, no API key needed
-    res = requests.post(
-        'https://api.cobalt.tools/api/json',
-        headers={
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-        },
-        json={
-            'url': f'https://www.youtube.com/watch?v={video_id}',
-            'vQuality': '720',
-            'isAudioMuted': False,
-        },
-        timeout=15
-    )
-    data = res.json()
-    if data.get('status') in ['stream', 'redirect', 'tunnel']:
-        return data.get('url')
-    return None
+    try:
+        res = requests.post(
+            'https://yt1s.com/api/ajaxSearch/index',
+            data={'q': f'https://www.youtube.com/watch?v={video_id}', 'vt': 'homevideo'},
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            timeout=20
+        )
+        print(f'[yt1s] status={res.status_code} body={res.text[:300]}')
+        data = res.json()
+        if data.get('status') == 'ok':
+            links = data.get('links', {}).get('mp4', {})
+            for quality in ['720', '480', '360']:
+                if quality in links:
+                    k = links[quality].get('k')
+                    vid = data.get('vid')
+                    if k and vid:
+                        r2 = requests.post(
+                            'https://yt1s.com/api/ajaxConvert/convert',
+                            data={'vid': vid, 'k': k},
+                            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+                            timeout=30
+                        )
+                        d2 = r2.json()
+                        print(f'[yt1s convert] {d2}')
+                        if d2.get('status') == 'ok':
+                            return d2.get('dlink')
+    except Exception as e:
+        print(f'[yt1s] error: {e}')
 
-def try_yt1s(video_id):
-    # yt1s analyze
-    res = requests.post(
-        'https://yt1s.com/api/ajaxSearch/index',
-        data={
-            'q': f'https://www.youtube.com/watch?v={video_id}',
-            'vt': 'homevideo',
-        },
-        headers={'Content-Type': 'application/x-www-form-urlencoded'},
-        timeout=15
-    )
-    data = res.json()
-    if data.get('status') == 'ok':
-        # get mp4 720p or best
-        links = data.get('links', {}).get('mp4', {})
-        for quality in ['720', '480', '360']:
-            if quality in links:
-                k = links[quality].get('k')
-                vid = data.get('vid')
-                if k and vid:
-                    # convert
-                    r2 = requests.post(
-                        'https://yt1s.com/api/ajaxConvert/convert',
-                        data={'vid': vid, 'k': k},
-                        headers={'Content-Type': 'application/x-www-form-urlencoded'},
-                        timeout=20
-                    )
-                    d2 = r2.json()
-                    if d2.get('status') == 'ok':
-                        return d2.get('dlink')
-    return None
-
-def try_loader(video_id):
-    url = f'https://www.youtube.com/watch?v={video_id}'
-    res = requests.get(
-        f'https://loader.to/api/button/?url={url}&f=mp4&quality=720',
-        timeout=15
-    )
-    data = res.json()
-    return data.get('url') or data.get('download_url')
+    raise Exception('সব downloader fail করেছে')
 
 
-# ========== VIDEO INFO ==========
 @app.route('/video-info', methods=['POST'])
 def video_info():
     data = request.json
@@ -113,38 +88,22 @@ def video_info():
     video_id = extract_video_id(url)
     if not video_id:
         return jsonify({'error': 'Valid YouTube URL দাও'}), 400
-
     try:
-        # Use YouTube oEmbed for basic info (no API key needed)
         res = requests.get(
             f'https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json',
             timeout=10
         )
-        if res.status_code == 200:
-            data = res.json()
-            title = data.get('title', 'Untitled')
-        else:
-            title = 'Untitled'
-
-        # Get duration via noembed
-        res2 = requests.get(f'https://noembed.com/embed?url=https://www.youtube.com/watch?v={video_id}', timeout=10)
-        duration = 300  # default 5 min if can't get
-
-        return jsonify({
-            'title': title,
-            'duration': duration,
-            'videoId': video_id,
-        })
+        title = res.json().get('title', 'Untitled') if res.status_code == 200 else 'Untitled'
+        return jsonify({'title': title, 'duration': 600, 'videoId': video_id})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
-# ========== PROCESS + UPLOAD ==========
 @app.route('/process-upload', methods=['POST'])
 def process_upload():
     data = request.json
     url = data.get('url', '')
-    duration = data.get('duration', 300)
+    duration = data.get('duration', 600)
     clip_index = data.get('clipIndex', 0)
     caption = data.get('caption', '')
     title = data.get('title', 'Video')
@@ -164,59 +123,72 @@ def process_upload():
     clip_path = os.path.join(TEMP_DIR, f'clip_{clip_index}_{pid}.mp4')
 
     try:
-        # Get download URL from free API
+        print(f'[process] Getting download URL for {video_id}')
         download_url = get_download_url(video_id)
-        if not download_url:
-            return jsonify({'success': False, 'error': 'Download link পাওয়া যায়নি'}), 500
+        print(f'[process] Download URL: {download_url[:80]}')
 
-        # Download the video
-        r = requests.get(download_url, stream=True, timeout=120, headers={
+        print(f'[process] Downloading video...')
+        r = requests.get(download_url, stream=True, timeout=300, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
+        print(f'[process] Download response: {r.status_code}, content-type: {r.headers.get("content-type")}')
+
         with open(raw_path, 'wb') as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-        # Get actual duration from downloaded file
+        file_size = os.path.getsize(raw_path)
+        print(f'[process] File size: {file_size} bytes')
+
+        if file_size < 100000:
+            with open(raw_path, 'rb') as f:
+                content = f.read(500)
+            print(f'[process] File too small, content: {content}')
+            cleanup(raw_path)
+            return jsonify({'success': False, 'error': f'Download fail হয়েছে (file size: {file_size} bytes)'}), 500
+
+        # Get actual duration
         probe = subprocess.run([
             'ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', raw_path
         ], capture_output=True, text=True)
-        probe_data = json.loads(probe.stdout)
+        probe_data = json.loads(probe.stdout) if probe.stdout else {}
         actual_duration = float(probe_data.get('format', {}).get('duration', duration))
+        print(f'[process] Actual duration: {actual_duration}s')
 
         if actual_duration < 120:
             cleanup(raw_path)
             return jsonify({'success': False, 'error': 'Video কমপক্ষে 2 মিনিটের হতে হবে'}), 400
 
-        # Random 2 min start
         max_start = max(0, actual_duration - 120)
         start_time = random.randint(0, int(max_start))
+        print(f'[process] Cutting clip from {start_time}s')
 
-        # Cut clip
-        subprocess.run([
-            'ffmpeg', '-y',
-            '-ss', str(start_time),
-            '-i', raw_path,
-            '-t', '120',
-            '-c:v', 'libx264', '-c:a', 'aac',
-            '-preset', 'fast',
+        result = subprocess.run([
+            'ffmpeg', '-y', '-ss', str(start_time),
+            '-i', raw_path, '-t', '120',
+            '-c:v', 'libx264', '-c:a', 'aac', '-preset', 'fast',
             clip_path
-        ], check=True, capture_output=True)
+        ], capture_output=True)
+        print(f'[ffmpeg] returncode={result.returncode} stderr={result.stderr.decode()[-300:]}')
+
+        if result.returncode != 0:
+            cleanup(raw_path, clip_path)
+            return jsonify({'success': False, 'error': 'ffmpeg clip cut fail'}), 500
 
         cleanup(raw_path)
 
         if not caption.strip():
             caption = generate_caption(title, clip_index)
 
+        print(f'[process] Uploading to YouTube...')
         video_id_uploaded = upload_to_youtube(clip_path, title, caption, yt_token, clip_index)
         cleanup(clip_path)
+        print(f'[process] Done! videoId={video_id_uploaded}')
 
         return jsonify({'success': True, 'videoId': video_id_uploaded})
 
-    except subprocess.CalledProcessError as e:
-        cleanup(raw_path, clip_path)
-        return jsonify({'success': False, 'error': 'ffmpeg error: ' + str(e)}), 500
     except Exception as e:
+        print(f'[process] EXCEPTION: {traceback.format_exc()}')
         cleanup(raw_path, clip_path)
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -224,10 +196,8 @@ def process_upload():
 def cleanup(*paths):
     for p in paths:
         try:
-            if p and os.path.exists(p):
-                os.remove(p)
-        except:
-            pass
+            if p and os.path.exists(p): os.remove(p)
+        except: pass
 
 
 def generate_caption(title, clip_index):
@@ -253,7 +223,6 @@ def upload_to_youtube(file_path, title, caption, token, clip_index):
         },
         'status': {'privacyStatus': 'public', 'selfDeclaredMadeForKids': False}
     }
-
     init_res = requests.post(upload_url, headers={
         'Authorization': f'Bearer {token}',
         'Content-Type': 'application/json',
@@ -277,5 +246,5 @@ def upload_to_youtube(file_path, title, caption, token, clip_index):
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
