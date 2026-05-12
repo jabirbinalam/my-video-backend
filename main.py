@@ -66,14 +66,13 @@ def process_upload():
         clip_path = os.path.join(TEMP_DIR, f'clip_{clip_index}_{os.getpid()}.mp4')
 
         # ---- Download video ----
-       ydl_opts = { 
-    'format' : 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' ,
-    'outtmpl' : raw_path ,
-    'quiet' : True ,
-    'no_warnings' : True ,
-    'cookiefile': 'youtube_cookies.txt', # এই লাইনটি কমা দিয়ে শেষে বসান
-}
-        
+    ydl_opts = { 
+            'format' : 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' ,
+            'outtmpl' : raw_path ,
+            'quiet' : True ,
+            'no_warnings' : True ,
+            'cookiefile': 'youtube_cookies.txt',
+}        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
