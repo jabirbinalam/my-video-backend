@@ -24,7 +24,7 @@ def video_info():
         return jsonify({'error': 'URL দাও'}), 400
 
     try:
-        ydl_opts = { 'quiet' : True , 'no_warnings' : True, 'cookiefile': 'youtube_cookies.txt' }
+        ydl_opts = {'quiet': True, 'no_warnings': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return jsonify({
@@ -36,7 +36,7 @@ def video_info():
         return jsonify({'error': str(e)}), 500
 
 
-# ========== PROCESS + UPLOAD =========
+# ========== PROCESS + UPLOAD ==========
 @app.route('/process-upload', methods=['POST'])
 def process_upload():
     data = request.json
@@ -66,12 +66,11 @@ def process_upload():
         clip_path = os.path.join(TEMP_DIR, f'clip_{clip_index}_{os.getpid()}.mp4')
 
         # ---- Download video ----
-   ydl_opts = { 
-            'format' : 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' ,
-            'outtmpl' : raw_path ,
-            'quiet' : True ,
-            'no_warnings' : True ,
-            'cookiefile': 'youtube_cookies.txt',
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'outtmpl': raw_path,
+            'quiet': True,
+            'no_warnings': True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
