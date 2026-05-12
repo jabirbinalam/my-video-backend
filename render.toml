@@ -1,0 +1,2 @@
+build_command = "pip install -r requirements.txt"
+start_command = "gunicorn main:app"
