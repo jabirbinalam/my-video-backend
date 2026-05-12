@@ -36,7 +36,7 @@ def video_info():
         return jsonify({'error': str(e)}), 500
 
 
-# ========== PROCESS + UPLOAD ==========
+# ========== PROCESS + UPLOAD =========
 @app.route('/process-upload', methods=['POST'])
 def process_upload():
     data = request.json
