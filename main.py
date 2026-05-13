@@ -15,6 +15,7 @@ CORS(app)
 
 ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY', ''))
 TEMP_DIR = tempfile.gettempdir()
+RAPIDAPI_KEY = os.environ.get('RAPIDAPI_KEY', '198a0d8021msh7c915ee82977c80p143959jsne0a91020f9be')
 
 def extract_video_id(url):
     patterns = [
@@ -28,57 +29,61 @@ def extract_video_id(url):
     return None
 
 def get_download_url(video_id):
+    print(f'[rapidapi] Getting download URL for {video_id}')
     try:
-        res = requests.post(
-            'https://api.cobalt.tools/api/json',
+        res = requests.get(
+            'https://youtube-media-downloader.p.rapidapi.com/v2/video/details',
             headers={
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
+                'x-rapidapi-key': RAPIDAPI_KEY,
+                'x-rapidapi-host': 'youtube-media-downloader.p.rapidapi.com'
             },
-            json={
-                'url': f'https://www.youtube.com/watch?v={video_id}',
-                'vQuality': '720',
-                'isAudioMuted': False,
-            },
-            timeout=20
+            params={'videoId': video_id},
+            timeout=30
         )
-        print(f'[cobalt] status={res.status_code} body={res.text[:300]}')
+        print(f'[rapidapi] status={res.status_code} body={res.text[:500]}')
         data = res.json()
-        if data.get('status') in ['stream', 'redirect', 'tunnel', 'pick']:
-            return data.get('url') or (data.get('picker', [{}])[0].get('url'))
-    except Exception as e:
-        print(f'[cobalt] error: {e}')
 
-    try:
-        res = requests.post(
-            'https://yt1s.com/api/ajaxSearch/index',
-            data={'q': f'https://www.youtube.com/watch?v={video_id}', 'vt': 'homevideo'},
-            headers={'Content-Type': 'application/x-www-form-urlencoded'},
-            timeout=20
-        )
-        print(f'[yt1s] status={res.status_code} body={res.text[:300]}')
-        data = res.json()
-        if data.get('status') == 'ok':
-            links = data.get('links', {}).get('mp4', {})
-            for quality in ['720', '480', '360']:
-                if quality in links:
-                    k = links[quality].get('k')
-                    vid = data.get('vid')
-                    if k and vid:
-                        r2 = requests.post(
-                            'https://yt1s.com/api/ajaxConvert/convert',
-                            data={'vid': vid, 'k': k},
-                            headers={'Content-Type': 'application/x-www-form-urlencoded'},
-                            timeout=30
-                        )
-                        d2 = r2.json()
-                        print(f'[yt1s convert] {d2}')
-                        if d2.get('status') == 'ok':
-                            return d2.get('dlink')
-    except Exception as e:
-        print(f'[yt1s] error: {e}')
+        if not data.get('status'):
+            raise Exception(f'RapidAPI error: {data}')
 
-    raise Exception('সব downloader fail করেছে')
+        # Get best video stream
+        videos = data.get('videos', {}).get('items', [])
+        print(f'[rapidapi] Found {len(videos)} video streams')
+
+        # Filter for mp4 with audio
+        mp4_streams = [v for v in videos if v.get('extension') == 'mp4' and not v.get('videoOnly', True)]
+        if not mp4_streams:
+            mp4_streams = [v for v in videos if v.get('extension') == 'mp4']
+
+        if not mp4_streams:
+            raise Exception('কোনো mp4 stream পাওয়া যায়নি')
+
+        # Sort by quality
+        def get_height(s):
+            try:
+                return int(s.get('height', 0) or 0)
+            except:
+                return 0
+
+        mp4_streams.sort(key=get_height, reverse=True)
+
+        # Pick 720p or best available
+        chosen = None
+        for s in mp4_streams:
+            h = get_height(s)
+            if h <= 720:
+                chosen = s
+                break
+        if not chosen:
+            chosen = mp4_streams[-1]
+
+        url = chosen.get('url')
+        print(f'[rapidapi] Chosen stream: height={chosen.get("height")} url={str(url)[:80]}')
+        return url
+
+    except Exception as e:
+        print(f'[rapidapi] EXCEPTION: {traceback.format_exc()}')
+        raise Exception(f'RapidAPI fail: {str(e)}')
 
 
 @app.route('/video-info', methods=['POST'])
@@ -94,7 +99,24 @@ def video_info():
             timeout=10
         )
         title = res.json().get('title', 'Untitled') if res.status_code == 200 else 'Untitled'
-        return jsonify({'title': title, 'duration': 600, 'videoId': video_id})
+
+        # Get duration via RapidAPI
+        try:
+            r2 = requests.get(
+                'https://youtube-media-downloader.p.rapidapi.com/v2/video/details',
+                headers={
+                    'x-rapidapi-key': RAPIDAPI_KEY,
+                    'x-rapidapi-host': 'youtube-media-downloader.p.rapidapi.com'
+                },
+                params={'videoId': video_id},
+                timeout=20
+            )
+            d2 = r2.json()
+            duration = int(d2.get('lengthSeconds', 600) or 600)
+        except:
+            duration = 600
+
+        return jsonify({'title': title, 'duration': duration, 'videoId': video_id})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -123,15 +145,15 @@ def process_upload():
     clip_path = os.path.join(TEMP_DIR, f'clip_{clip_index}_{pid}.mp4')
 
     try:
-        print(f'[process] Getting download URL for {video_id}')
         download_url = get_download_url(video_id)
-        print(f'[process] Download URL: {download_url[:80]}')
+        if not download_url:
+            return jsonify({'success': False, 'error': 'Download URL পাওয়া যায়নি'}), 500
 
         print(f'[process] Downloading video...')
         r = requests.get(download_url, stream=True, timeout=300, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
-        print(f'[process] Download response: {r.status_code}, content-type: {r.headers.get("content-type")}')
+        print(f'[process] Download status: {r.status_code}')
 
         with open(raw_path, 'wb') as f:
             for chunk in r.iter_content(chunk_size=8192):
@@ -141,11 +163,8 @@ def process_upload():
         print(f'[process] File size: {file_size} bytes')
 
         if file_size < 100000:
-            with open(raw_path, 'rb') as f:
-                content = f.read(500)
-            print(f'[process] File too small, content: {content}')
             cleanup(raw_path)
-            return jsonify({'success': False, 'error': f'Download fail হয়েছে (file size: {file_size} bytes)'}), 500
+            return jsonify({'success': False, 'error': f'Download fail (size: {file_size} bytes)'}), 500
 
         # Get actual duration
         probe = subprocess.run([
@@ -153,7 +172,7 @@ def process_upload():
         ], capture_output=True, text=True)
         probe_data = json.loads(probe.stdout) if probe.stdout else {}
         actual_duration = float(probe_data.get('format', {}).get('duration', duration))
-        print(f'[process] Actual duration: {actual_duration}s')
+        print(f'[process] Duration: {actual_duration}s')
 
         if actual_duration < 120:
             cleanup(raw_path)
@@ -161,7 +180,7 @@ def process_upload():
 
         max_start = max(0, actual_duration - 120)
         start_time = random.randint(0, int(max_start))
-        print(f'[process] Cutting clip from {start_time}s')
+        print(f'[process] Cutting from {start_time}s')
 
         result = subprocess.run([
             'ffmpeg', '-y', '-ss', str(start_time),
@@ -169,9 +188,9 @@ def process_upload():
             '-c:v', 'libx264', '-c:a', 'aac', '-preset', 'fast',
             clip_path
         ], capture_output=True)
-        print(f'[ffmpeg] returncode={result.returncode} stderr={result.stderr.decode()[-300:]}')
 
         if result.returncode != 0:
+            print(f'[ffmpeg] error: {result.stderr.decode()[-300:]}')
             cleanup(raw_path, clip_path)
             return jsonify({'success': False, 'error': 'ffmpeg clip cut fail'}), 500
 
