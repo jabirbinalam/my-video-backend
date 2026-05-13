@@ -40,45 +40,71 @@ def get_download_url(video_id):
             params={'videoId': video_id},
             timeout=30
         )
-        print(f'[rapidapi] status={res.status_code} body={res.text[:500]}')
+        print(f'[rapidapi] status={res.status_code}')
         data = res.json()
+        print(f'[rapidapi] keys={list(data.keys())}')
 
-        if not data.get('status'):
-            raise Exception(f'RapidAPI error: {data}')
+        # Find video streams - check multiple possible locations
+        streams = []
 
-        # Get best video stream
-        videos = data.get('videos', {}).get('items', [])
-        print(f'[rapidapi] Found {len(videos)} video streams')
+        # Option 1: data.videos.items
+        if 'videos' in data:
+            v = data['videos']
+            if isinstance(v, dict):
+                streams = v.get('items', [])
+            elif isinstance(v, list):
+                streams = v
 
-        # Filter for mp4 with audio
-        mp4_streams = [v for v in videos if v.get('extension') == 'mp4' and not v.get('videoOnly', True)]
-        if not mp4_streams:
-            mp4_streams = [v for v in videos if v.get('extension') == 'mp4']
+        # Option 2: data.medias
+        if not streams and 'medias' in data:
+            streams = data['medias']
 
-        if not mp4_streams:
-            raise Exception('কোনো mp4 stream পাওয়া যায়নি')
+        # Option 3: data.formats
+        if not streams and 'formats' in data:
+            streams = data['formats']
 
-        # Sort by quality
+        # Option 4: data itself is a list
+        if not streams and isinstance(data, list):
+            streams = data
+
+        print(f'[rapidapi] Found {len(streams)} streams')
+
+        if not streams:
+            # Log full response for debugging
+            print(f'[rapidapi] Full response: {json.dumps(data)[:1000]}')
+            raise Exception('কোনো stream পাওয়া যায়নি')
+
+        # Filter mp4 streams
+        mp4 = [s for s in streams if str(s.get('extension','') or s.get('mimeType','')).lower().find('mp4') >= 0]
+        if not mp4:
+            mp4 = streams
+
+        # Sort by quality/height
         def get_height(s):
             try:
-                return int(s.get('height', 0) or 0)
+                h = s.get('height') or s.get('qualityLabel','').replace('p','')
+                return int(str(h).replace('p','') or 0)
             except:
                 return 0
 
-        mp4_streams.sort(key=get_height, reverse=True)
+        mp4.sort(key=get_height, reverse=True)
 
-        # Pick 720p or best available
+        # Pick <= 720p
         chosen = None
-        for s in mp4_streams:
-            h = get_height(s)
-            if h <= 720:
+        for s in mp4:
+            if get_height(s) <= 720:
                 chosen = s
                 break
         if not chosen:
-            chosen = mp4_streams[-1]
+            chosen = mp4[0]
 
-        url = chosen.get('url')
-        print(f'[rapidapi] Chosen stream: height={chosen.get("height")} url={str(url)[:80]}')
+        # Get URL
+        url = chosen.get('url') or chosen.get('downloadUrl') or chosen.get('src')
+        print(f'[rapidapi] Chosen: height={get_height(chosen)} url={str(url)[:80]}')
+
+        if not url:
+            raise Exception('Stream URL খালি')
+
         return url
 
     except Exception as e:
